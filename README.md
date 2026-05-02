@@ -12,7 +12,7 @@ These labs build each system phase by phase, intentionally introducing the bugs 
 
 | Problem        | Folder                     | Status                                                       |
 | -------------- | -------------------------- | ------------------------------------------------------------ |
-| Rate Limiter   | [`RateLimiter/`](RateLimiter/) | Labs 00–02 complete; lab 03 (Redis-backed bucket) in progress |
+| Rate Limiter   | [`RateLimiter/`](RateLimiter/) | Labs 00–03 complete; lab 04 (Lua atomic fix) up next |
 
 Each problem folder has its own `JOURNAL.md` chronicling what every lab phase added and the staff+ talking points it unlocks. That's the time-machine: read it top-to-bottom and you walk through the full design journey.
 

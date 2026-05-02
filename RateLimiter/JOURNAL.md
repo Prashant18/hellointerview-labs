@@ -77,4 +77,33 @@ Chronological log of what each lab phase added or changed. The codebase lives in
 
 **What's next:** Lab 03 — replace the in-memory bucket with **Redis-backed state** (single Redis instance, plain `HMGET`/`HSET` + `MULTI/EXEC`). The leak from lab 02 disappears. Then we'll deliberately introduce a TOCTOU race condition by firing concurrent requests, prove it's there with a chaos test, and use lab 04 to fix it with a Lua script.
 
+---
+
+## Lab 03 — Redis-backed Token Bucket (naive HMGET/HSET) (2026-05-02)
+
+**Files added:**
+- `labs/00-setup/gateway/app/redis_tokenbucket.py` — `RedisTokenBucket` class. Naive HMGET → compute → HSET inside a MULTI/EXEC pipeline. Uses wall-clock (`time.time`) so all replicas agree on "now". Lazy-init for unseen clients (full bucket, `last_refill = now`); 1-hour TTL on idle keys.
+- `labs/00-setup/k6/race.js` — chaos test: 20 VUs × 100 iterations against ONE client_id with `capacity=10`, `refill_per_sec=1`. Asserts `count(status=200) >= 11` — any overshoot proves the TOCTOU race.
+
+**Files changed:**
+- `labs/00-setup/docker-compose.yml` — adds `redis:7-alpine` service with healthcheck; gateway gains `REDIS_URL=redis://redis:6379/0` env var and `depends_on: { redis: service_healthy }`.
+- `labs/00-setup/gateway/pyproject.toml` — adds `redis==5.1.1`; configures `[tool.basedpyright] typeCheckingMode = "standard"` to silence redis-py's `ResponseT` typing-stub limitation that trips strict pyright on every `await`.
+- `labs/00-setup/gateway/app/main.py` — FastAPI `lifespan` now opens a Redis connection pool on startup, instantiates `RedisTokenBucket`, exposes it on `app.state.bucket`, awaits `bucket.allow()` from `/v1/check`, and closes the pool on shutdown.
+- `labs/00-setup/k6/burst.js` — flipped thresholds back to `count==10/40` (centralized state means the lab 02 leak is fixed; this is now a regression assertion).
+- `labs/00-setup/verify.sh` — adds a "race" stage; computes before/after Prometheus deltas of `sum(gateway_ratelimit_allowed_total)` for both burst (must be exactly 10) and race (must overshoot >10). 10-request LB warmup before assertions to avoid Caddy stale-DNS jitter after compose recreates containers.
+- `labs/00-setup/Makefile` — adds `make race` and `make redis-cli` targets.
+
+**Property proved:** With Redis as the single source of truth for bucket state, the lab 02 per-replica leak is GONE — `burst.js` (50 sequential reqs from one client, capacity=10) gives exactly 10 allowed and 40 denied. **But** under concurrency, `race.js` (20 VUs × 100 reqs against the same client) lets 40–70+ requests through for a configured capacity of 10. The TOCTOU race between HMGET and HSET lets multiple in-flight requests each observe the same token count and each decide "allow" before any write lands.
+
+**Staff+ talking points unlocked:**
+- *Centralizing state isn't enough; you also have to make the read-modify-write atomic.* Redis `MULTI/EXEC` makes a sequence of *writes* atomic with respect to each other. It does NOT close the gap between an earlier HMGET and the EXEC. Senior+ candidates often stop at "we use Redis"; staff+ candidates immediately ask "where's the read in this picture, and what happens between read and write?"
+- *Wall clock vs. monotonic clock for distributed counters.* Monotonic is per-process — replica A's "100s" is meaningless to replica B. For shared state, you need wall clock (NTP-synced, "good enough") or — better — a clock that lives next to the state, like `redis.call('TIME')` inside a Lua script. Lab 04 will switch to that.
+- *Lazy creation + TTL is your memory bound.* Don't pre-create per-client state. Initialize on first request (`HMGET → [None, None] → full bucket`). Set `EXPIRE` on every write so abandoned clients evict in 1 hour. Without TTL, you pay forever for a one-shot user. Same pattern as Stripe/Cloudflare-style limiters in production.
+- *redis-py's `ResponseT` is a typing trap.* `ResponseT = Union[Awaitable[T], T]` collapses to `T` under strict pyright/basedpyright, which then complains about `await`. Pragmatic fix: relax `typeCheckingMode = "standard"`. Real fix: wait for redis-py's overload-typed async client (in flight).
+- *FastAPI `lifespan` is the right home for connection pools.* Don't open Redis connections per-request (TCP handshake = death at scale). Open one pool per process at startup, share via `app.state`, close on shutdown. Same shape for any backing store.
+
+**The "I broke it once" debugging story:** First implementation passed `burst` (10/40) but I'd written `pipe.hset(... "last_refill": last_refill ...)` — preserving the OLD timestamp instead of writing `now`. Result: every subsequent request saw an ever-growing `elapsed` window since the original `last_refill`, and one extra request would slip through (11/39). The lesson: writing the algorithm correctly is half the job; *committing the new state* — including the new clock — is the other half.
+
+**What's next:** Lab 04 — replace HMGET/HSET with a **Lua script** that executes inside Redis. The script reads, computes, writes, and returns the decision in one atomic step. `race.js`'s assertion flips from "must overshoot" to "must give exactly 10". Same chaos load, fixed implementation.
+
 
