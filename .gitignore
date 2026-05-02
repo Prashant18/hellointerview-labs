@@ -1,0 +1,36 @@
+# ─── Python ────────────────────────────────────────────────────────────────
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.pyright/
+
+# ─── Coverage ──────────────────────────────────────────────────────────────
+.coverage
+.coverage.*
+htmlcov/
+*.cover
+
+# ─── IDE / OS ──────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─── Local env (defensive — none currently in use) ─────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Logs / runtime artifacts ──────────────────────────────────────────────
+*.log
+logs/
+
+# ─── What is committed deliberately (do NOT add here): ─────────────────────
+#   uv.lock, .python-version, pyproject.toml, Caddyfile, prometheus.yml,
+#   docker-compose.yml, Dockerfile, anything under shared/.

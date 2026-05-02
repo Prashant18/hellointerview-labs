@@ -1,0 +1,26 @@
+# Lab 02 — load balancer in front of replicated gateways.
+#
+# `dynamic a` re-resolves the `gateway` A record every second via Docker's
+# embedded DNS (127.0.0.11). With `deploy.replicas: 3` in compose, that name
+# resolves to all 3 replica IPs, and Caddy round-robins across them on a
+# per-request basis (no per-connection stickiness).
+#
+# This is essential for the lab's narrative: every request from one client
+# can land on a different replica, so each replica only sees ~1/N of the
+# traffic and over-allows accordingly.
+
+{
+    auto_https off
+    admin off
+}
+
+:8000 {
+    reverse_proxy {
+        dynamic a {
+            name gateway
+            port 8000
+            refresh 1s
+        }
+        lb_policy round_robin
+    }
+}

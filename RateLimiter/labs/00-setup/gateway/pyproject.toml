@@ -1,0 +1,36 @@
+[project]
+name = "ratelimiter-gateway"
+version = "0.0.1"
+description = "FastAPI gateway evolving across rate-limiter labs (see ../JOURNAL.md)."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.30.6",
+    "prometheus-client==0.20.0",
+    "redis==5.1.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.3.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.basedpyright]
+# basedpyright defaults to "all" (the strictest mode). That mode is too
+# loud for this project because redis-py 5.x types its async methods as
+# `ResponseT = Union[Awaitable[T], T]`, which collapses to `T` under
+# strict inference and trips reportGeneralTypeIssues on every `await`.
+# "standard" mode is roughly equivalent to vanilla pyright's defaults
+# and lets us still catch real bugs without false-positive noise on
+# library calls.
+typeCheckingMode = "standard"
+reportUnknownMemberType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownVariableType = "none"
+
+[tool.uv]
+package = false

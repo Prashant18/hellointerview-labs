@@ -1,0 +1,13 @@
+# Normalize line endings cross-OS.
+* text=auto eol=lf
+
+# Force LF on shell scripts and Python — Docker images run Linux.
+*.sh   text eol=lf
+*.py   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+
+# Lockfiles are treated as binary so git doesn't try to merge them.
+uv.lock binary
+*.lock  binary

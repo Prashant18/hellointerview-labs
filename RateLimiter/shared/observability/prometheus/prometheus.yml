@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Discover every gateway replica via Docker's embedded DNS. With 3
+  # replicas of `gateway`, the A record returns 3 IPs and Prometheus
+  # creates 3 separate scrape targets, each labeled with its own
+  # `instance="<ip>:8000"`. This matters because each replica's
+  # in-memory counter is independent — without per-instance labels we'd
+  # get monotonicity violations as the same series appeared to jump
+  # around across scrapes.
+  - job_name: gateway
+    metrics_path: /metrics
+    dns_sd_configs:
+      - names: [gateway]
+        type: A
+        port: 8000
+        refresh_interval: 5s
