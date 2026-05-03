@@ -106,4 +106,31 @@ Chronological log of what each lab phase added or changed. The codebase lives in
 
 **What's next:** Lab 04 — replace HMGET/HSET with a **Lua script** that executes inside Redis. The script reads, computes, writes, and returns the decision in one atomic step. `race.js`'s assertion flips from "must overshoot" to "must give exactly 10". Same chaos load, fixed implementation.
 
+---
+
+## Lab 04 — Lua atomic Token Bucket (2026-05-02)
+
+**Files added:**
+- `labs/00-setup/gateway/scripts/tokenbucket.lua` — the entire allow() algorithm as a single Lua script. Reads via `HMGET`, computes `now` from `redis.call('TIME')` (clock lives next to state — no NTP dependency, no per-replica drift), lazy-inits new clients, applies refill capped at capacity, decides without pushing tokens negative, writes back via `HSET` + `EXPIRE`, returns `{allowed, floor(tokens), tostring(reset_after)}`.
+- `labs/00-setup/gateway/app/lua_tokenbucket.py` — Python wrapper. Loads the script via `redis_client.register_script()` (which gives us EVALSHA caching + NOSCRIPT auto-recovery for free), exposes `allow(client_id) → Decision`. ~30 lines, pure glue.
+
+**Files changed:**
+- `labs/00-setup/gateway/Dockerfile` — adds `COPY scripts ./scripts` so the Lua file is in the image.
+- `labs/00-setup/gateway/app/main.py` — new `BUCKET_BACKEND` env var (default: `lua`); lifespan instantiates either `LuaTokenBucket` or `RedisTokenBucket` so you can A/B compare the racy and atomic implementations without code changes. Version bumped to `lab04`.
+- `labs/00-setup/k6/race.js` — thresholds flipped from `count>=11` (overshoot proof) to `count==10/==90` (atomicity proof). Also fixed a sneaky test bug: was using `Date.now()` at the top-level init context, which runs once per VU and gave each VU a slightly different timestamp → 3 distinct client_ids → 3 distinct buckets → fake-overshoot of 30 even with atomic Lua. Now uses k6's `setup()` function which runs ONCE before any VU starts and shares its return value to every iteration.
+- `labs/00-setup/verify.sh` — flipped race assertion from "expect overshoot" to "expect EXACTLY 10".
+
+**Property proved:** Same chaos load as lab 03 (20 VUs × 100 concurrent requests against one client_id, capacity=10, refill=1/s) now allows EXACTLY 10 and denies EXACTLY 90 — every single time, no jitter. Burst regression (10/40 sequential) still passes. The TOCTOU race window from lab 03 is closed because the read, decide, and write all happen inside Redis as one atomic unit.
+
+**Staff+ talking points unlocked:**
+- *Lua scripts in Redis are atomic by construction.* Redis is single-threaded; while a script is running, no other client's commands execute. That's the entire mechanism that closes the read-modify-write window. "Atomic" here is the strongest possible meaning — no interleaving, no order ambiguity, no reordering.
+- *`register_script()` is the right pattern, not raw `eval()`.* It hashes the body once, calls EVALSHA on every invocation (saves bandwidth), and transparently re-uploads via EVAL when Redis returns NOSCRIPT (after a `SCRIPT FLUSH` or restart). Treat the Script object as the unit of compilation.
+- *Put the clock next to the state.* `redis.call('TIME')` inside the script means all replicas see the same "now" — there is no clock drift between replicas, no NTP dependency, no last_refill timestamps from one replica being misinterpreted by another. This is a strictly better answer than the wall-clock approach lab 03 used.
+- *Redis Lua return type quirks bite you.* Lua `true` → RESP integer 1, but Lua `false` → RESP nil (which becomes `None` in Python and crashes `int(None)`). Always return explicit `0`/`1` integers. Lua numbers truncate to integers on return — wrap floats in `tostring()`. Lua tables → Python lists.
+- *HMGET returns Lua `false`, not `nil`, for missing fields.* But `tonumber(false)` and `tonumber(nil)` both return `nil`, so the `if not x` lazy-init pattern handles both cleanly.
+
+**The "I broke it twice" debugging story (worth telling in interviews):** First impl had three lingering bugs from the typed-out Lua: `tokens > 0` instead of `tokens >= 1` (subtle off-by-fraction), `(tokens - capacity)` sign-flip on `reset_after`, and `(1 - capacity)` instead of `(1 - tokens)` in the deny path. Once the script was right, the test still showed "30 allowed" — exactly 3× the limit, identical to the lab 02 in-memory leak pattern. Two days lost would have happened here if I'd assumed the script was wrong; instead I dumped Redis state with `redis-cli KEYS 'bucket:*'` and discovered the test was creating THREE different buckets because k6's init-context `Date.now()` runs once per VU. Moved client_id derivation into `setup()`, race went to exactly 10. **Lesson: when overshoot mirrors a structural number (3× = N replicas, 20× = N VUs), suspect a test-side cardinality bug before suspecting the algorithm.**
+
+**What's next:** Lab 05 — single-Redis becomes the bottleneck at scale. Replace the single `redis:7-alpine` instance with **Redis Cluster** (3 master + 3 replica nodes). The Lua script keeps working with zero changes — Redis Cluster ensures all keys for a given hash slot land on the same node, so atomicity is preserved. We'll add a sharding load test that distributes ~50k req/s across many client_ids and shows the load spread across master nodes in Grafana.
+
 

@@ -91,24 +91,25 @@ fi
 ok "centralized state enforces the limit globally — leak from lab 02 is fixed."
 
 # --------------------------------------------------------------------------
-# Stage 5 — race (chaos): demonstrate the TOCTOU bug.
-# 20 concurrent VUs against ONE client. Naive HMGET/HSET should let more
-# than `capacity` through; lab 04's Lua script will pin it back to capacity.
+# Stage 5 — race: REGRESSION assertion as of lab 04.
+# Same chaos load (20 VUs × 100 reqs against ONE client_id, capacity=10).
+# The Lua script makes the read-modify-write atomic, so we now assert
+# EXACTLY 10 allowed. To reobserve the lab 03 race, set BUCKET_BACKEND=redis.
 # --------------------------------------------------------------------------
 allowed_before_race=$allowed_after_burst
 
-step "running k6 race (20 VUs × 100 reqs vs 1 client, capacity=10) — expect OVERSHOOT..."
+step "running k6 race (20 VUs × 100 reqs vs 1 client, capacity=10) — expect EXACTLY 10/90..."
 docker compose run --rm k6 run /scripts/race.js
 
 sleep 6
 allowed_after_race=$(prom_query 'sum(gateway_ratelimit_allowed_total)')
 race_allowed=$((allowed_after_race - allowed_before_race))
-echo "[verify] race delta: allowed=${race_allowed}  (capacity=10; anything > 10 proves the race)"
+echo "[verify] race delta: allowed=${race_allowed}  (capacity=10; must be EXACTLY 10 with Lua atomicity)"
 
-if [[ "$race_allowed" -le 10 ]]; then
-  fail "race did NOT overshoot. Got ${race_allowed} allowed but capacity is 10. Either the race didn't fire (try cranking VUs/iterations) or you accidentally fixed it (great, but lab 04 would be anticlimactic)."
+if [[ "$race_allowed" -ne 10 ]]; then
+  fail "race expected EXACTLY 10 allowed (Lua atomicity), got ${race_allowed}. Either the script isn't actually atomic, or BUCKET_BACKEND=redis is set (rerun with BUCKET_BACKEND=lua to compare)."
 fi
-ok "TOCTOU race demonstrated end-to-end — ${race_allowed} allowed for a configured limit of 10."
+ok "Lua atomicity holds — exactly ${race_allowed} of 100 concurrent requests passed."
 
 # --------------------------------------------------------------------------
 # Stage 6 — per-instance breakdown for the dashboard story.

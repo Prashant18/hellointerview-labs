@@ -9,6 +9,9 @@ Current state:
               in-memory state demonstrably leaks the global limit.
     - lab 03: bucket state moved to Redis (single instance). The leak is
               fixed; a TOCTOU race between HMGET and HSET takes its place.
+    - lab 04: race fixed by moving the entire read-compute-write inside a
+              Lua script (atomic by construction). Set BUCKET_BACKEND=redis
+              to compare against the lab 03 racy implementation.
 """
 
 from __future__ import annotations
@@ -23,10 +26,12 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from redis.asyncio import Redis
 
+from app.lua_tokenbucket import LuaTokenBucket
 from app.redis_tokenbucket import RedisTokenBucket
 from app.tokenbucket import Rule
 
-GATEWAY_VERSION = "lab03"
+GATEWAY_VERSION = "lab04"
+BUCKET_BACKEND = os.getenv("BUCKET_BACKEND", "lua")  # "lua" (atomic) or "redis" (racy, lab 03)
 
 RULE = Rule(
     capacity=int(os.getenv("RL_CAPACITY", "10")),
@@ -42,7 +47,13 @@ async def lifespan(app: FastAPI):
     redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
     # Fail fast at startup if Redis is unreachable.
     await redis_client.ping()
-    app.state.bucket = RedisTokenBucket(RULE, redis_client)
+    if BUCKET_BACKEND == "lua":
+        app.state.bucket = LuaTokenBucket(RULE, redis_client)
+    elif BUCKET_BACKEND == "redis":
+        # The lab 03 racy implementation, kept around for A/B comparison.
+        app.state.bucket = RedisTokenBucket(RULE, redis_client)
+    else:
+        raise ValueError(f"Unknown BUCKET_BACKEND={BUCKET_BACKEND!r} (use 'lua' or 'redis')")
     app.state.redis = redis_client
     try:
         yield
@@ -114,7 +125,7 @@ def _ratelimit_headers(remaining: int, reset_after: float) -> dict[str, str]:
 @app.get("/v1/check")
 async def check(request: Request) -> JSONResponse:
     client_id = _client_id_from(request)
-    bucket: RedisTokenBucket = request.app.state.bucket
+    bucket = request.app.state.bucket  # LuaTokenBucket or RedisTokenBucket per BUCKET_BACKEND
     decision = await bucket.allow(client_id)
     headers = _ratelimit_headers(decision.remaining, decision.reset_after)
 

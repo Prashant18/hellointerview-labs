@@ -20,6 +20,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
 
 COPY app ./app
+COPY scripts ./scripts
 
 ENV PATH="/srv/.venv/bin:${PATH}"
 
