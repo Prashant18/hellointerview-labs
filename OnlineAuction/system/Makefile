@@ -28,6 +28,9 @@ health:
 smoke:
 	$(COMPOSE) run --rm k6 run /scripts/smoke.js
 
+race:
+	$(COMPOSE) run --rm k6 run /scripts/race.js
+
 verify:
 	./verify.sh
 
