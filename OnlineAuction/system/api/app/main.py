@@ -12,10 +12,10 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
-from app import ddb, redis_client
+from app import cache, ddb, redis_client
 from app.models import BidRequest, BidResponse, ItemCreate, ItemResponse
 
-API_VERSION = "lab03"
+API_VERSION = "lab04"
 
 
 @asynccontextmanager
@@ -76,22 +76,6 @@ async def metrics() -> Response:
     return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-def _item_from_ddb(item: dict) -> ItemResponse:
-    """Translate a DDB Item (typed AttributeValue dict) to our response model."""
-    g = item.get
-    return ItemResponse(
-        item_id=g("item_id", {}).get("S", ""),
-        title=g("title", {}).get("S", ""),
-        start_price=float(g("start_price", {}).get("N", "0")),
-        end_time_epoch=int(g("end_time_epoch", {}).get("N", "0")),
-        current_high_bid=(
-            float(item["current_high_bid"]["N"]) if "current_high_bid" in item else None
-        ),
-        current_high_bidder=item.get("current_high_bidder", {}).get("S"),
-        closed_by=item.get("closed_by", {}).get("S"),
-    )
-
-
 @app.post("/v1/items", status_code=201)
 async def create_item(body: ItemCreate, request: Request) -> ItemResponse:
     item_id = uuid.uuid4().hex
@@ -114,12 +98,12 @@ async def create_item(body: ItemCreate, request: Request) -> ItemResponse:
 
 @app.get("/v1/items/{item_id}")
 async def get_item(item_id: str, request: Request) -> ItemResponse:
-    resp = await request.app.state.ddb.get_item(
-        TableName=ddb.ITEMS_TABLE, Key={"item_id": {"S": item_id}}
+    item = await cache.get_or_load_item(
+        item_id, request.app.state.redis, request.app.state.ddb
     )
-    if "Item" not in resp:
+    if item is None:
         raise HTTPException(404, f"item {item_id} not found")
-    return _item_from_ddb(resp["Item"])
+    return ItemResponse(**item)
 
 
 @app.post("/v1/items/{item_id}/bids", status_code=201)
@@ -156,8 +140,9 @@ async def place_bid(item_id: str, body: BidRequest, request: Request) -> BidResp
         BIDS_REJECTED.labels(reason="too_low").inc()
         raise HTTPException(409, "bid no longer beats the current high")
 
-    # Lab 03: fanout. Best-effort publish — if Redis is down the bid is still
-    # committed (DDB is source of truth); pubsub is the live-update channel only.
+    # Lab 03: pub/sub fanout. Lab 04: cache invalidate on bid commit.
+    # Both best-effort — Redis is the live channel + cache, NOT the source
+    # of truth. If Redis is down: bid still commits, cache self-heals at TTL.
     payload = json.dumps(
         {
             "amount": float(body.amount),
@@ -167,6 +152,7 @@ async def place_bid(item_id: str, body: BidRequest, request: Request) -> BidResp
     )
     try:
         await request.app.state.redis.publish(f"auction:{item_id}", payload)
+        await cache.invalidate_item(item_id, request.app.state.redis)
     except Exception:
         pass
 

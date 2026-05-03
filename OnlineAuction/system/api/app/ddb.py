@@ -22,6 +22,24 @@ ITEMS_TABLE = "items"
 BIDS_TABLE = "bids"
 
 
+def unwrap_item(item: dict) -> dict:
+    """Translate a DDB AttributeValue dict into a plain JSON-friendly dict.
+    Lives in `ddb.py` so both the route handler and the cache layer can use it
+    without circular imports."""
+    g = item.get
+    return {
+        "item_id": g("item_id", {}).get("S", ""),
+        "title": g("title", {}).get("S", ""),
+        "start_price": float(g("start_price", {}).get("N", "0")),
+        "end_time_epoch": int(g("end_time_epoch", {}).get("N", "0")),
+        "current_high_bid": (
+            float(item["current_high_bid"]["N"]) if "current_high_bid" in item else None
+        ),
+        "current_high_bidder": item.get("current_high_bidder", {}).get("S"),
+        "closed_by": item.get("closed_by", {}).get("S"),
+    }
+
+
 def session() -> aioboto3.Session:
     return aioboto3.Session(
         aws_access_key_id=AWS_KEY,

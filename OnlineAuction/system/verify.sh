@@ -57,6 +57,9 @@ step "running SSE fanout latency probe (lab 03 — p95 < 200ms)..."
 (cd api && API_URL="http://localhost:${API_PORT}" uv run --quiet python scripts/sse_latency.py) \
   || fail "SSE fanout probe failed"
 
+step "running k6 cache load (lab 04 — p95 read <5ms; hit ratio >95%)..."
+docker compose run --rm k6 run /scripts/cache_load.js
+
 step "PASS"
 cat <<EOF
 

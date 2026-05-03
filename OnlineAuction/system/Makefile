@@ -34,6 +34,9 @@ race:
 stream:
 	cd api && API_URL=http://localhost:$(API_PORT) uv run python scripts/sse_latency.py
 
+cache:
+	$(COMPOSE) run --rm k6 run /scripts/cache_load.js
+
 verify:
 	./verify.sh
 
