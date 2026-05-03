@@ -1,0 +1,18 @@
+# Round-robin LB across api replicas via Docker DNS A-record refresh.
+# Reused pattern from RateLimiter lab 02.
+
+{
+    auto_https off
+    admin off
+}
+
+:8000 {
+    reverse_proxy {
+        dynamic a {
+            name api
+            port 8000
+            refresh 1s
+        }
+        lb_policy round_robin
+    }
+}

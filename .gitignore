@@ -16,6 +16,8 @@ htmlcov/
 # ─── IDE / OS ──────────────────────────────────────────────────────────────
 .idea/
 .vscode/
+# Claude Code local project settings (per-machine permission allowlists etc.)
+.claude/
 *.swp
 *.swo
 *~
