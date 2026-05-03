@@ -19,7 +19,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from app import ddb
 from app.models import BidRequest, BidResponse, ItemCreate, ItemResponse
 
-API_VERSION = "lab00"
+API_VERSION = "lab02"
 
 
 @asynccontextmanager
@@ -48,7 +48,9 @@ LATENCY = Histogram(
 )
 BIDS_ACCEPTED = Counter("auction_bids_accepted_total", "Bids accepted (status 201).")
 BIDS_REJECTED = Counter(
-    "auction_bids_rejected_total", "Bids rejected.", ["reason"]  # too_low | item_missing
+    "auction_bids_rejected_total",
+    "Bids rejected.",
+    ["reason"],  # too_low | item_missing
 )
 
 
@@ -125,30 +127,11 @@ async def get_item(item_id: str, request: Request) -> ItemResponse:
 
 @app.post("/v1/items/{item_id}/bids", status_code=201)
 async def place_bid(item_id: str, body: BidRequest, request: Request) -> BidResponse:
-    """Lab 00 NAIVE bid handler — read item, check in Python, write.
-
-    This implementation has a TOCTOU race that lab 01 demonstrates and
-    lab 02 fixes by collapsing into a single conditional UpdateItem."""
+    """Lab 02: single conditional UpdateItem — DynamoDB enforces the
+    'strictly higher than current_high_bid' invariant server-side. Concurrent
+    equal-amount bids: exactly one wins, the rest get ConditionalCheckFailed → 409."""
     client = request.app.state.ddb
 
-    # 1) Read current item state.
-    resp = await client.get_item(
-        TableName=ddb.ITEMS_TABLE, Key={"item_id": {"S": item_id}}
-    )
-    if "Item" not in resp:
-        BIDS_REJECTED.labels(reason="item_missing").inc()
-        raise HTTPException(404, f"item {item_id} not found")
-    item = resp["Item"]
-    current_high = float(item["current_high_bid"]["N"]) if "current_high_bid" in item else 0.0
-    start_price = float(item["start_price"]["N"])
-
-    # 2) Validate in the application — naive (the bug lab 01 will expose).
-    floor = max(current_high, start_price)
-    if body.amount <= floor:
-        BIDS_REJECTED.labels(reason="too_low").inc()
-        raise HTTPException(409, f"bid {body.amount} not greater than current floor {floor}")
-
-    # 3) Insert bid record.
     bid_id = f"{int(time.time() * 1000):013d}-{uuid.uuid4().hex[:8]}"
     await client.put_item(
         TableName=ddb.BIDS_TABLE,
@@ -161,18 +144,26 @@ async def place_bid(item_id: str, body: BidRequest, request: Request) -> BidResp
         },
     )
 
-    # 4) Update item's current high — UNCONDITIONAL. Last write wins. BUG.
-    await client.update_item(
-        TableName=ddb.ITEMS_TABLE,
-        Key={"item_id": {"S": item_id}},
-        UpdateExpression="SET current_high_bid = :a, current_high_bidder = :b",
-        ExpressionAttributeValues={
-            ":a": {"N": str(body.amount)},
-            ":b": {"S": body.bidder},
-        },
-    )
+    try:
+        await client.update_item(
+            TableName=ddb.ITEMS_TABLE,
+            Key={"item_id": {"S": item_id}},
+            UpdateExpression="SET current_high_bid = :a, current_high_bidder = :b",
+            ConditionExpression="attribute_exists(item_id) AND (attribute_not_exists(current_high_bid) OR current_high_bid < :a)",
+            ExpressionAttributeValues={
+                ":a": {"N": str(body.amount)},
+                ":b": {"S": body.bidder},
+            },
+        )
 
-    BIDS_ACCEPTED.inc()
-    return BidResponse(
-        bid_id=bid_id, item_id=item_id, bidder=body.bidder, amount=body.amount, accepted=True
-    )
+        BIDS_ACCEPTED.inc()
+        return BidResponse(
+            bid_id=bid_id,
+            item_id=item_id,
+            bidder=body.bidder,
+            amount=body.amount,
+            accepted=True,
+        )
+    except client.exceptions.ConditionalCheckFailedException:
+        BIDS_REJECTED.labels(reason="too_low").inc()
+        raise HTTPException(409, "bid no longer beats the current high")

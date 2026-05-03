@@ -50,7 +50,7 @@ ok "bid round-trip works."
 step "running k6 smoke..."
 docker compose run --rm k6 run /scripts/smoke.js
 
-step "running k6 race (lab 01 — proves the naive bid handler over-allows)..."
+step "running k6 race (lab 02 — invariant: exactly one 201, 29× 409)..."
 docker compose run --rm k6 run /scripts/race.js
 
 step "PASS"

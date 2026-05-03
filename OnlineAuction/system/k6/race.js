@@ -1,17 +1,11 @@
 import http from 'k6/http';
 import { check } from 'k6';
 
-// Lab 01 — bid race demo. DEMONSTRATES the bug in the lab 00 naive bid
-// handler: GetItem → check-in-Python → PutItem(bids) → unconditional
-// UpdateItem(items). Multiple concurrent bids of the same amount all
-// observe the same `current_high_bid`, all decide "valid", all write —
-// last writer wins on `current_high_bidder` but EVERY one already
-// returned 201 to its client.
-//
-// We create ONE item in setup() (runs once before any VU), then 30 VUs
-// each fire one bid of the SAME amount against that one item. With the
-// naive handler, multiple bids get 201. After lab 02's
-// ConditionExpression fix, exactly ONE 201 + 29× 409.
+// Lab 02 — same chaos test, INVERTED assertion. After collapsing
+// place_bid() into a single conditional UpdateItem, exactly ONE of the
+// 30 concurrent equal-amount bids wins (201); the other 29 get
+// ConditionalCheckFailedException → 409. The race is now decided
+// server-side under the partition's serialized ordering.
 
 const BASE = __ENV.API_URL || 'http://caddy:8000';
 
@@ -35,9 +29,9 @@ export const options = {
     },
   },
   thresholds: {
-    // BUG ASSERTION (flips in lab 02): count >= 2 means multiple "winners"
-    // were accepted for the same item — the race fired.
-    'http_reqs{status:201}': ['count>=2'],
+    // Invariant scoped to the bid endpoint only (setup's item-create is a 201 too).
+    'http_reqs{endpoint:bid,status:201}': ['count==1'],
+    'http_reqs{endpoint:bid,status:409}': ['count==29'],
   },
 };
 
@@ -45,7 +39,7 @@ export default function (data) {
   const res = http.post(
     `${BASE}/v1/items/${data.itemId}/bids`,
     JSON.stringify({ bidder: `racer-${__VU}`, amount: 100 }),
-    { headers: { 'Content-Type': 'application/json' } },
+    { headers: { 'Content-Type': 'application/json' }, tags: { endpoint: 'bid' } },
   );
   check(res, { 'is 201 or 409': (r) => r.status === 201 || r.status === 409 });
 }
