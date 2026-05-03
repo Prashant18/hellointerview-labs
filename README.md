@@ -14,6 +14,7 @@ These labs build each system phase by phase, intentionally introducing the bugs 
 | -------------- | -------------------------- | ------------------------------------------------------------ |
 | Rate Limiter   | [`RateLimiter/`](RateLimiter/) | **✅ Complete (5/10 labs)** — labs 00–05 + lab 06 fail-closed wiring as bonus. See [`RateLimiter/RECAP.md`](RateLimiter/RECAP.md) for the cheat-sheet. |
 | Online Auction | [`OnlineAuction/`](OnlineAuction/) | **✅ Complete (5/5 labs)** — DynamoDB Local + conditional writes for bid race + Redis SSE fanout + read-through cache + sparse-GSI race-claim for exactly-once auction close. See [`OnlineAuction/JOURNAL.md`](OnlineAuction/JOURNAL.md). |
+| Robinhood     | [`Robinhood/`](Robinhood/) | Lab 00 done — broker shell (FastAPI api×3) + separate `mock-exchange` Docker service + DDB orders table with 3 GSIs ready for labs 1-3. Happy-path POST /v1/orders with idempotent client_order_id replay. Labs 1 (live price SSE fanout) → 2 (trade-feed → orders update via GSI) → 3 (consistency clean-up) up next. |
 
 Each problem folder has its own `JOURNAL.md` chronicling what every lab phase added and the staff+ talking points it unlocks. That's the time-machine: read it top-to-bottom and you walk through the full design journey.
 

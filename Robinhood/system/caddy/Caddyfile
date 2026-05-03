@@ -1,0 +1,20 @@
+# Round-robin LB across api replicas via Docker DNS A-record refresh.
+# Sticky sessions land in lab 1 (needed for SSE: a user's connection must
+# stick to one api replica so the per-process Symbol→Set<userId> map stays
+# consistent for the connection's lifetime).
+
+{
+    auto_https off
+    admin off
+}
+
+:8000 {
+    reverse_proxy {
+        dynamic a {
+            name api
+            port 8000
+            refresh 1s
+        }
+        lb_policy round_robin
+    }
+}

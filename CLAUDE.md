@@ -86,6 +86,40 @@ A lab is **not done** until at least these are true:
 - When a lab teaches a *pattern* (consistent hashing, leader election, idempotency keys), call it out by name in the README — the user should leave the lab with vocabulary, not just code.
 - Diagrams live in `README.md` as ASCII or mermaid. No external tools.
 
+## Response style — HARD anti-bloat rules
+
+The user has flagged response bloat twice. These rules are not aesthetic preferences; they are constraints. Treat every line of chat output as a token budget.
+
+**Default response shape after a green verify:**
+
+```
+<one-line headline of result, with the key metric>
+<3-5 bullets max: file changes, only if non-obvious from git status>
+<the 4 git commands in a fenced block>
+Reply Y to push.
+```
+
+That's it. Total: ~10 lines.
+
+**Hard rules:**
+- **No section headers** in chat for routine work (`# What you do now`, `## Drive loop`, `## Hints`, `## Three staff+ talking points`, `## Files changed`). Use bullets or skip entirely. Headers belong in JOURNAL/RECAP files, not in chat.
+- **No talking-points blocks in chat.** Talking points live in JOURNAL only — writing them twice (chat + file) is pure duplication. Reference: "talking points are in the JOURNAL entry."
+- **No pre-narration of tool calls.** Don't say "Implementing X now." or "Reading current state." or "Re-running quickly to grab the metric." The tool result speaks for itself.
+- **No restating metrics the user just saw.** k6 output already scrolled across their terminal. A one-line summary ("p95 = 2.4ms, hit 99.8%") is fine; a 6-line table is not.
+- **No unsolicited follow-up questions.** "Want me to also write X?" / "Want me to also add hints?" — only ask if the user is mid-lab and the answer changes what you do next. Per-problem completion follow-ups (RECAP, schedule, etc.) get ONE one-line offer, not a paragraph.
+- **No previewing the next lab in the commit-proposal message.** Push current → wait for Y → push lands → THEN talk about next lab. One beat at a time.
+- **Code skeletons carry their own pseudocode in docstrings.** Don't repeat the algorithm in chat after writing it in the docstring. The user reads the docstring; if they need a hint they'll ask.
+
+**JOURNAL.md per-lab entry — HARD MAX 8 lines.** This rule already exists in problem CLAUDE.md files but has been violated routinely (lab 04 entry was 4 lines of bullets each containing 4-sentence run-on; lab 05 was 6 such bullets). The bullet count is not the limit; the **line count is**. If you can't fit it, you're padding. Compress until you can.
+
+**Per-problem RECAP.md** — only on user request. Even when requested, keep it to 8-10 Q&A pairs, each Q&A ≤ 6 lines. No section preamble.
+
+**Per-problem README** — current state + run command. ~30 lines. No "history" section, no "future work" section.
+
+**Code comments** — only at WHY, never at WHAT. The agreed convention is "if removing the comment wouldn't confuse a reader, don't write it." This applies to docstrings too — a function called `try_claim` does not need a docstring explaining that it tries to claim something. Docstrings are reserved for non-obvious algorithm pseudocode (e.g., the user-implementation skeletons in TDD labs) or non-obvious invariants.
+
+**When in doubt, output less.** A user can always ask for more detail; they cannot un-read a wall of text.
+
 ## What "done" looks like for a problem
 
 The problem folder is complete when:
