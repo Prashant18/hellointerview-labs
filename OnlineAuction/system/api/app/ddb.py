@@ -53,16 +53,29 @@ def client_ctx(sess: aioboto3.Session):
     return sess.client("dynamodb", endpoint_url=DDB_ENDPOINT)
 
 
-async def _create_if_missing(client, *, table_name: str, key_schema, attr_defs) -> None:
+CLOSING_INDEX = "closing-index"
+
+
+async def _create_if_missing(
+    client,
+    *,
+    table_name: str,
+    key_schema,
+    attr_defs,
+    global_secondary_indexes=None,
+) -> None:
     """Idempotent create. ResourceInUseException is benign — another replica
     raced us to it; we just wait for the table to be active."""
+    kwargs = {
+        "TableName": table_name,
+        "KeySchema": key_schema,
+        "AttributeDefinitions": attr_defs,
+        "BillingMode": "PAY_PER_REQUEST",
+    }
+    if global_secondary_indexes:
+        kwargs["GlobalSecondaryIndexes"] = global_secondary_indexes
     try:
-        await client.create_table(
-            TableName=table_name,
-            KeySchema=key_schema,
-            AttributeDefinitions=attr_defs,
-            BillingMode="PAY_PER_REQUEST",
-        )
+        await client.create_table(**kwargs)
     except client.exceptions.ResourceInUseException:
         pass  # someone else created it; fall through to the waiter
     await client.get_waiter("table_exists").wait(TableName=table_name)
@@ -80,11 +93,30 @@ async def ensure_tables(client) -> None:
     else:
         raise RuntimeError("DynamoDB Local never came up")
 
+    # Lab 05: items table carries a sparse GSI `closing-index` so the closer
+    # background task can `Query` ending auctions in O(matches) RCU instead of
+    # `Scan`-ing the whole table every poll. Sparse means an item appears in
+    # the index iff `closing_bucket` is set; the close path REMOVEs it
+    # atomically alongside setting `closed_by`.
     await _create_if_missing(
         client,
         table_name=ITEMS_TABLE,
         key_schema=[{"AttributeName": "item_id", "KeyType": "HASH"}],
-        attr_defs=[{"AttributeName": "item_id", "AttributeType": "S"}],
+        attr_defs=[
+            {"AttributeName": "item_id", "AttributeType": "S"},
+            {"AttributeName": "closing_bucket", "AttributeType": "S"},
+            {"AttributeName": "end_time_epoch", "AttributeType": "N"},
+        ],
+        global_secondary_indexes=[
+            {
+                "IndexName": CLOSING_INDEX,
+                "KeySchema": [
+                    {"AttributeName": "closing_bucket", "KeyType": "HASH"},
+                    {"AttributeName": "end_time_epoch", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "KEYS_ONLY"},
+            }
+        ],
     )
     await _create_if_missing(
         client,

@@ -60,6 +60,11 @@ step "running SSE fanout latency probe (lab 03 — p95 < 200ms)..."
 step "running k6 cache load (lab 04 — p95 read <5ms; hit ratio >95%)..."
 docker compose run --rm k6 run /scripts/cache_load.js
 
+step "running exactly-once close chaos (lab 05 — 100 auctions; sum closed == 100)..."
+(cd api && API_URL="http://localhost:${API_PORT}" PROM_URL="http://localhost:${PROM_PORT}" \
+   uv run --quiet python scripts/exactly_once_close.py) \
+  || fail "exactly-once close chaos failed"
+
 step "PASS"
 cat <<EOF
 

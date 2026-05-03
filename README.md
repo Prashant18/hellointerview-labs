@@ -13,7 +13,7 @@ These labs build each system phase by phase, intentionally introducing the bugs 
 | Problem        | Folder                     | Status                                                       |
 | -------------- | -------------------------- | ------------------------------------------------------------ |
 | Rate Limiter   | [`RateLimiter/`](RateLimiter/) | **✅ Complete (5/10 labs)** — labs 00–05 + lab 06 fail-closed wiring as bonus. See [`RateLimiter/RECAP.md`](RateLimiter/RECAP.md) for the cheat-sheet. |
-| Online Auction | [`OnlineAuction/`](OnlineAuction/) | Labs 00–01 done — DynamoDB Local + naive bid handler + race chaos test exposing multi-winner bug. Lab 02 (conditional-write fix) up next. |
+| Online Auction | [`OnlineAuction/`](OnlineAuction/) | **✅ Complete (5/5 labs)** — DynamoDB Local + conditional writes for bid race + Redis SSE fanout + read-through cache + sparse-GSI race-claim for exactly-once auction close. See [`OnlineAuction/JOURNAL.md`](OnlineAuction/JOURNAL.md). |
 
 Each problem folder has its own `JOURNAL.md` chronicling what every lab phase added and the staff+ talking points it unlocks. That's the time-machine: read it top-to-bottom and you walk through the full design journey.
 

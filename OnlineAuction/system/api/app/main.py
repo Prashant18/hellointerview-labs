@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import socket
 import time
 import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -12,22 +15,41 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
-from app import cache, ddb, redis_client
+from app import cache, closer, ddb, redis_client
 from app.models import BidRequest, BidResponse, ItemCreate, ItemResponse
 
-API_VERSION = "lab04"
+API_VERSION = "lab05"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Open one DDB client + one Redis pool per process; ensure tables exist."""
+    """Open one DDB client + one Redis pool per process; ensure tables exist;
+    spawn the closer background task that race-claims ending auctions."""
     sess = ddb.session()
     async with AsyncExitStack() as stack:
         client = await stack.enter_async_context(ddb.client_ctx(sess))
         await ddb.ensure_tables(client)
         app.state.ddb = client
         app.state.redis = await stack.enter_async_context(redis_client.client_ctx())
-        yield
+
+        # Replica identity stamps `closed_by` on each auction this replica wins,
+        # AND labels per-replica metric series so distribution is visible in Prom.
+        app.state.replica_id = f"{socket.gethostname()}:{os.getpid()}"
+
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            closer.run_close_loop(
+                app.state.ddb,
+                app.state.redis,
+                replica_id=app.state.replica_id,
+                stop_event=stop,
+            )
+        )
+        try:
+            yield
+        finally:
+            stop.set()
+            await task
 
 
 app = FastAPI(title="auction-api", version=API_VERSION, lifespan=lifespan)
@@ -79,6 +101,9 @@ async def metrics() -> Response:
 @app.post("/v1/items", status_code=201)
 async def create_item(body: ItemCreate, request: Request) -> ItemResponse:
     item_id = uuid.uuid4().hex
+    # Lab 05: `closing_bucket` puts this item into the sparse `closing-index`
+    # GSI. The closer Queries that index to find ending auctions in O(matches)
+    # RCU instead of Scan-ing the whole table.
     await request.app.state.ddb.put_item(
         TableName=ddb.ITEMS_TABLE,
         Item={
@@ -86,6 +111,7 @@ async def create_item(body: ItemCreate, request: Request) -> ItemResponse:
             "title": {"S": body.title},
             "start_price": {"N": str(body.start_price)},
             "end_time_epoch": {"N": str(body.end_time_epoch)},
+            "closing_bucket": {"S": closer.bucket_for(body.end_time_epoch)},
         },
     )
     return ItemResponse(

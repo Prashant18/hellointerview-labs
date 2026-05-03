@@ -37,6 +37,10 @@ stream:
 cache:
 	$(COMPOSE) run --rm k6 run /scripts/cache_load.js
 
+close-chaos:
+	cd api && API_URL=http://localhost:$(API_PORT) PROM_URL=http://localhost:$(PROM_PORT) \
+	  uv run python scripts/exactly_once_close.py
+
 verify:
 	./verify.sh
 
