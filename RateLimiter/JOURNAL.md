@@ -133,4 +133,29 @@ Chronological log of what each lab phase added or changed. The codebase lives in
 
 **What's next:** Lab 05 — single-Redis becomes the bottleneck at scale. Replace the single `redis:7-alpine` instance with **Redis Cluster** (3 master + 3 replica nodes). The Lua script keeps working with zero changes — Redis Cluster ensures all keys for a given hash slot land on the same node, so atomicity is preserved. We'll add a sharding load test that distributes ~50k req/s across many client_ids and shows the load spread across master nodes in Grafana.
 
+---
+
+## Lab 05 — Redis Cluster sharding (2026-05-02)
+
+**Files added:**
+- (none — purely a topology change; the algorithm code is unchanged.)
+
+**Files changed:**
+- `labs/00-setup/docker-compose.yml` — single `redis` service replaced with **6 nodes**: `redis-1` … `redis-6`. Each runs `redis-server --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --cluster-announce-hostname redis-N --cluster-preferred-endpoint-type hostname`. New one-shot `redis-cluster-init` service waits for all six to be healthy then runs `redis-cli --cluster create redis-1:6379 ... redis-6:6379 --cluster-replicas 1 --cluster-yes`. The init container is idempotent (skips create if `cluster_state==ok`).
+- `labs/00-setup/gateway/app/main.py` — `lifespan` now picks up `REDIS_CLUSTER_NODES` (comma-separated seed list). When set, instantiates `redis.asyncio.cluster.RedisCluster(startup_nodes=[...], require_full_coverage=False)`. Single-node `REDIS_URL` path retained as a fallback for local non-cluster dev. Version bumped to `lab05`.
+- `labs/00-setup/gateway/Dockerfile` — unchanged (the `scripts/` dir was already copied in lab 04).
+- `labs/00-setup/Makefile` — `make redis-cli` now opens `redis-cli -c` against `redis-1` (the `-c` flag follows MOVED/ASK redirects across the cluster). Added `make cluster-check` to dump topology + slot coverage via `redis-cli --cluster check`.
+
+**Property proved:** Existing `burst.js` (10/40 sequential) and `race.js` (10/90 concurrent under one client_id) both pass on the cluster with **zero test changes**. The smoke test's 500+ unique client_ids distribute cleanly across all three masters — `make cluster-check` after a verify run reports `503 keys in 3 masters` with all 16384 slots covered.
+
+**Staff+ talking points unlocked:**
+- *Redis Cluster preserves the per-key atomicity guarantee.* Hash slots are computed by `CRC16(key) mod 16384`. Each slot is owned by exactly one master at any moment. Any Lua script touching ONE key (or a `{tag}`-grouped set of keys) runs on the master that owns its slot, atomically, with no other client able to interleave. Translation: if your atomic primitive worked on a single Redis, it works on a Redis Cluster — *for single-key operations*. Multi-key transactions across slots break.
+- *No code change for the algorithm; one config change for the client.* The Python switch is `Redis.from_url(...)` → `RedisCluster(startup_nodes=[...])`. The cluster client discovers the topology from the seed list and refreshes its slot map on `MOVED`. From the application's perspective, atomicity is unchanged.
+- *Hostname-based cluster announce beats IPs in Docker.* `--cluster-announce-hostname redis-1 --cluster-preferred-endpoint-type hostname` makes nodes advertise their service hostname. Containers come up with different IPs every restart; with hostnames, the cluster topology survives `docker compose up -d` cleanly. Without this, you'd see "Could not connect to <stale-ip>" on every restart.
+- *Throughput math: 3× the headroom, NOT 3× the per-client limit.* Each master handles ~100k ops/sec for hash operations. 3 masters → ~300k ops/sec aggregate. Our rate-limit check is 1 EVALSHA per request; effective ceiling ≈ 300k req/sec. **A single client's traffic still lands on ONE master**, so per-key throughput is unchanged — that's the hot-key problem (lab 08's territory).
+- *`require_full_coverage=False` is preparation for failover.* During a master failure, the slot it owned is briefly unreachable until a replica is promoted (~5–10s). With `require_full_coverage=True` (the default), the entire client refuses to make ANY request until coverage is restored. With `False`, requests targeting other slots still succeed; only requests targeting the failing slot's keys 503. We'll exploit this in lab 06 to demonstrate fail-closed semantics with a small blast radius instead of a total outage.
+- *Idempotent cluster init is the boring detail that ships you on Friday.* `redis-cli --cluster create` errors with "Node is not empty" if you re-run against a formed cluster. The init container checks `cluster_state` first and skips create when already `ok`. This means `make verify` is rerunnable without `docker compose down -v` in between — important for an iteration loop.
+
+**What's next:** Lab 06 — chaos engineering. We `docker kill` a master mid-traffic and observe (a) the failover gap (how long until a replica is promoted and the cluster reaches `cluster_state:ok` again), (b) what the gateway actually returns to clients during that gap (timeouts? connection refused? a graceful 503?), and (c) implement the `fail-closed` policy from the HelloInterview source so that gateway returns 503 to keep load off downstream services. The chaos test (`chaos/failover.sh`) is a TDD task for the user.
+
 

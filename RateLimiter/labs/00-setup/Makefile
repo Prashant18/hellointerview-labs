@@ -38,9 +38,14 @@ burst:
 race:
 	$(COMPOSE) run --rm k6 run /scripts/race.js
 
-# Peek at the bucket state in Redis (handy after running burst/race).
+# Open a redis-cli inside the cluster (defaults to redis-1; flips to other
+# nodes via -ASK/-MOVED redirects automatically).
 redis-cli:
-	$(COMPOSE) exec redis redis-cli
+	$(COMPOSE) exec redis-1 redis-cli -c
+
+# Inspect the cluster topology + slot assignment.
+cluster-check:
+	$(COMPOSE) exec redis-1 redis-cli --cluster check redis-1:6379
 
 # Unit tests against the TokenBucket implementation. Runs locally via uv —
 # no docker needed, just the gateway/.venv populated by `make sync`.

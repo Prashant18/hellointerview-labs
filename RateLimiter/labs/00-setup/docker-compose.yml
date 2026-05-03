@@ -1,16 +1,102 @@
 name: ratelimiter
 
 services:
-  redis:
+  # ─── Redis Cluster (lab 05): 3 masters + 3 replicas ────────────────────────
+  # Each node listens on 6379 (data) and 16379 (cluster bus). They discover
+  # each other by hostname (Docker DNS). The `redis-cluster-init` service
+  # is a one-shot that runs `redis-cli --cluster create` once all six
+  # nodes are healthy, then exits — no replicas, no restart.
+  redis-1: &redis-node
     image: redis:7-alpine
-    container_name: rl-redis
-    ports:
-      - "${REDIS_PORT:-16379}:6379"
+    command: >-
+      redis-server
+      --cluster-enabled yes
+      --cluster-config-file /data/nodes.conf
+      --cluster-node-timeout 5000
+      --cluster-announce-hostname redis-1
+      --cluster-preferred-endpoint-type hostname
+      --appendonly yes
+      --port 6379
+      --bind 0.0.0.0
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
       timeout: 2s
       retries: 10
+  redis-2:
+    <<: *redis-node
+    command: >-
+      redis-server
+      --cluster-enabled yes --cluster-config-file /data/nodes.conf
+      --cluster-node-timeout 5000 --cluster-announce-hostname redis-2
+      --cluster-preferred-endpoint-type hostname --appendonly yes
+      --port 6379 --bind 0.0.0.0
+  redis-3:
+    <<: *redis-node
+    command: >-
+      redis-server
+      --cluster-enabled yes --cluster-config-file /data/nodes.conf
+      --cluster-node-timeout 5000 --cluster-announce-hostname redis-3
+      --cluster-preferred-endpoint-type hostname --appendonly yes
+      --port 6379 --bind 0.0.0.0
+  redis-4:
+    <<: *redis-node
+    command: >-
+      redis-server
+      --cluster-enabled yes --cluster-config-file /data/nodes.conf
+      --cluster-node-timeout 5000 --cluster-announce-hostname redis-4
+      --cluster-preferred-endpoint-type hostname --appendonly yes
+      --port 6379 --bind 0.0.0.0
+  redis-5:
+    <<: *redis-node
+    command: >-
+      redis-server
+      --cluster-enabled yes --cluster-config-file /data/nodes.conf
+      --cluster-node-timeout 5000 --cluster-announce-hostname redis-5
+      --cluster-preferred-endpoint-type hostname --appendonly yes
+      --port 6379 --bind 0.0.0.0
+  redis-6:
+    <<: *redis-node
+    command: >-
+      redis-server
+      --cluster-enabled yes --cluster-config-file /data/nodes.conf
+      --cluster-node-timeout 5000 --cluster-announce-hostname redis-6
+      --cluster-preferred-endpoint-type hostname --appendonly yes
+      --port 6379 --bind 0.0.0.0
+
+  # One-shot init: waits for all 6 nodes to be healthy, then forms the
+  # cluster (3 masters with 1 replica each). After it exits, the cluster
+  # is fully formed and persists via /data/nodes.conf inside each node.
+  # Re-running this container against a formed cluster errors gracefully.
+  redis-cluster-init:
+    image: redis:7-alpine
+    container_name: rl-redis-init
+    depends_on:
+      redis-1: { condition: service_healthy }
+      redis-2: { condition: service_healthy }
+      redis-3: { condition: service_healthy }
+      redis-4: { condition: service_healthy }
+      redis-5: { condition: service_healthy }
+      redis-6: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        # Idempotency: if redis-1 already thinks it's in a healthy cluster,
+        # don't try to create one (would error "Node is not empty").
+        cluster_state=$$(redis-cli -h redis-1 -p 6379 cluster info 2>/dev/null | tr -d '\r' | grep cluster_state | cut -d: -f2 || echo unknown)
+        if [ "$$cluster_state" = "ok" ]; then
+          echo "[init] cluster already formed (state=ok); skipping create."
+          exit 0
+        fi
+        echo "[init] cluster_state=$$cluster_state — creating cluster..."
+        redis-cli --cluster create \
+          redis-1:6379 redis-2:6379 redis-3:6379 \
+          redis-4:6379 redis-5:6379 redis-6:6379 \
+          --cluster-replicas 1 --cluster-yes
+        echo "[init] cluster create returned. Final state:"
+        redis-cli -h redis-1 -p 6379 cluster info | grep cluster_state
+    restart: "no"
 
   gateway:
     build:
@@ -21,7 +107,8 @@ services:
     deploy:
       replicas: 3
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      # Comma-separated cluster seeds. RedisCluster discovers the rest.
+      - REDIS_CLUSTER_NODES=redis-1:6379,redis-2:6379,redis-3:6379
       - RL_CAPACITY=10
       - RL_REFILL_PER_SEC=1.0
     healthcheck:
@@ -29,10 +116,10 @@ services:
       interval: 2s
       timeout: 2s
       retries: 15
-      start_period: 2s
+      start_period: 5s
     depends_on:
-      redis:
-        condition: service_healthy
+      redis-cluster-init:
+        condition: service_completed_successfully
 
   caddy:
     image: caddy:2.8-alpine

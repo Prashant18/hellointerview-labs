@@ -25,12 +25,13 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from redis.asyncio import Redis
+from redis.asyncio.cluster import ClusterNode, RedisCluster
 
 from app.lua_tokenbucket import LuaTokenBucket
 from app.redis_tokenbucket import RedisTokenBucket
 from app.tokenbucket import Rule
 
-GATEWAY_VERSION = "lab04"
+GATEWAY_VERSION = "lab05"
 BUCKET_BACKEND = os.getenv("BUCKET_BACKEND", "lua")  # "lua" (atomic) or "redis" (racy, lab 03)
 
 RULE = Rule(
@@ -38,13 +39,39 @@ RULE = Rule(
     refill_per_sec=float(os.getenv("RL_REFILL_PER_SEC", "1.0")),
 )
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+# Lab 05: Redis Cluster connection.
+# REDIS_CLUSTER_NODES = comma-separated "host:port" seeds. The cluster client
+# discovers the rest of the topology automatically. For backwards compat with
+# pre-cluster local dev, fall back to REDIS_URL pointing at a single node.
+REDIS_CLUSTER_NODES = os.getenv("REDIS_CLUSTER_NODES", "")
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis-1:6379/0")
+
+
+def _parse_cluster_nodes(spec: str) -> list[ClusterNode]:
+    nodes = []
+    for hostport in spec.split(","):
+        hostport = hostport.strip()
+        if not hostport:
+            continue
+        host, _, port = hostport.partition(":")
+        nodes.append(ClusterNode(host=host, port=int(port or "6379")))
+    return nodes
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Open one Redis connection pool per gateway process. Closed on shutdown."""
-    redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
+    """Open one Redis(Cluster) connection pool per gateway process."""
+    if REDIS_CLUSTER_NODES:
+        # Cluster mode (lab 05+). RedisCluster discovers every master/replica
+        # from the seed list and keeps its slot map fresh on its own.
+        redis_client = RedisCluster(
+            startup_nodes=_parse_cluster_nodes(REDIS_CLUSTER_NODES),
+            decode_responses=True,
+            require_full_coverage=False,  # tolerate transient partial slot coverage during failover (lab 06)
+        )
+    else:
+        # Single-instance fallback (lab 03/04 local dev).
+        redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
     # Fail fast at startup if Redis is unreachable.
     await redis_client.ping()
     if BUCKET_BACKEND == "lua":
