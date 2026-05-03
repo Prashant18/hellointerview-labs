@@ -1,35 +1,32 @@
-"""OnlineAuction api — see ../../JOURNAL.md for what each lab adds.
-
-Lab 00: setup. /v1 endpoints exist; bid handler is INTENTIONALLY naive (no
-race protection) — lab 01 will demolish it, lab 02 will fix it with a
-ConditionExpression on UpdateItem.
-"""
+"""OnlineAuction api — see ../../JOURNAL.md for what each lab adds."""
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
-from decimal import Decimal
+from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
-from app import ddb
+from app import ddb, redis_client
 from app.models import BidRequest, BidResponse, ItemCreate, ItemResponse
 
-API_VERSION = "lab02"
+API_VERSION = "lab03"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Open one DDB client per process; ensure tables exist on startup."""
+    """Open one DDB client + one Redis pool per process; ensure tables exist."""
     sess = ddb.session()
     async with AsyncExitStack() as stack:
         client = await stack.enter_async_context(ddb.client_ctx(sess))
         await ddb.ensure_tables(client)
         app.state.ddb = client
+        app.state.redis = await stack.enter_async_context(redis_client.client_ctx())
         yield
 
 
@@ -155,15 +152,71 @@ async def place_bid(item_id: str, body: BidRequest, request: Request) -> BidResp
                 ":b": {"S": body.bidder},
             },
         )
-
-        BIDS_ACCEPTED.inc()
-        return BidResponse(
-            bid_id=bid_id,
-            item_id=item_id,
-            bidder=body.bidder,
-            amount=body.amount,
-            accepted=True,
-        )
     except client.exceptions.ConditionalCheckFailedException:
         BIDS_REJECTED.labels(reason="too_low").inc()
         raise HTTPException(409, "bid no longer beats the current high")
+
+    # Lab 03: fanout. Best-effort publish — if Redis is down the bid is still
+    # committed (DDB is source of truth); pubsub is the live-update channel only.
+    payload = json.dumps(
+        {
+            "amount": float(body.amount),
+            "bidder": body.bidder,
+            "ts": int(time.time() * 1000),
+        }
+    )
+    try:
+        await request.app.state.redis.publish(f"auction:{item_id}", payload)
+    except Exception:
+        pass
+
+    BIDS_ACCEPTED.inc()
+    return BidResponse(
+        bid_id=bid_id,
+        item_id=item_id,
+        bidder=body.bidder,
+        amount=body.amount,
+        accepted=True,
+    )
+
+
+@app.get("/v1/items/{item_id}/stream")
+async def stream(item_id: str, request: Request) -> StreamingResponse:
+    """SSE stream of bid events for one item."""
+    return StreamingResponse(
+        _event_stream(request.app.state.redis, f"auction:{item_id}", request),
+        media_type="text/event-stream",
+    )
+
+
+async def _event_stream(redis, channel: str, request: Request) -> AsyncIterator[bytes]:
+    """Lab 03 — USER TO IMPLEMENT.
+
+    Yield SSE frames for each message published to `channel`.
+
+    Contract (see tests/test_stream.py for the assertions):
+      - Get a pubsub object: ``ps = redis.pubsub()`` then ``await ps.subscribe(channel)``.
+      - Loop: poll ``await ps.get_message(ignore_subscribe_messages=True, timeout=1.0)``.
+        * If msg is not None and msg.get("type") == "message":
+            yield  b"data: " + msg["data"] + b"\\n\\n"
+        * Periodically check ``await request.is_disconnected()`` — break out if True.
+      - On exit (via ``finally``): ``await ps.unsubscribe(channel)`` then ``await ps.aclose()``.
+
+    Why this shape:
+      - Yielding bytes lets FastAPI write the SSE frame straight to the socket.
+      - Polling with a 1s timeout (vs ``listen()``) lets us check the disconnect
+        signal between polls — otherwise a slow auction would hold the connection
+        open forever after the client navigated away.
+      - ``finally`` cleanup matters: without it, every dropped client leaks a
+        Redis subscriber until the pool fills up.
+    """
+    ps = redis.pubsub()
+    try:
+        await ps.subscribe(channel)
+        while not await request.is_disconnected():
+            msg = await ps.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            if msg and msg.get("type") == "message":
+                yield b"data: " + msg["data"] + b"\n\n"
+    finally:
+        await ps.unsubscribe(channel)
+        await ps.aclose()

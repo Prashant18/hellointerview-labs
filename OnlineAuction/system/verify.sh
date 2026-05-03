@@ -53,6 +53,10 @@ docker compose run --rm k6 run /scripts/smoke.js
 step "running k6 race (lab 02 — invariant: exactly one 201, 29× 409)..."
 docker compose run --rm k6 run /scripts/race.js
 
+step "running SSE fanout latency probe (lab 03 — p95 < 200ms)..."
+(cd api && API_URL="http://localhost:${API_PORT}" uv run --quiet python scripts/sse_latency.py) \
+  || fail "SSE fanout probe failed"
+
 step "PASS"
 cat <<EOF
 

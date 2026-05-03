@@ -10,6 +10,15 @@ services:
     # No healthcheck (image lacks curl/wget). The api lifespan retries
     # connection in ddb.ensure_tables(), so api waits for DDB to be reachable.
 
+  redis:
+    image: redis:7-alpine
+    container_name: auc-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 1s
+      retries: 10
+
   api:
     build:
       context: ./api
@@ -21,9 +30,12 @@ services:
       - AWS_DEFAULT_REGION=us-east-1
       - AWS_ACCESS_KEY_ID=local
       - AWS_SECRET_ACCESS_KEY=local
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       dynamodb-local:
         condition: service_started
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health',timeout=1).status==200 else 1)"]
       interval: 2s

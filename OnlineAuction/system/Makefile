@@ -31,6 +31,9 @@ smoke:
 race:
 	$(COMPOSE) run --rm k6 run /scripts/race.js
 
+stream:
+	cd api && API_URL=http://localhost:$(API_PORT) uv run python scripts/sse_latency.py
+
 verify:
 	./verify.sh
 
