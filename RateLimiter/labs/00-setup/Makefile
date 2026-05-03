@@ -1,4 +1,4 @@
-.PHONY: up down restart logs ps smoke burst verify clean health metrics open sync test test-watch run-local
+.PHONY: up down restart logs ps smoke burst race verify clean health metrics ready open sync test test-watch run-local cluster-check redis-cli chaos-failover
 
 COMPOSE = docker compose
 
@@ -26,6 +26,9 @@ ps:
 health:
 	@curl -fsS http://localhost:$(GATEWAY_PORT)/health | python3 -m json.tool
 
+ready:
+	@curl -sS -w '\n[HTTP %{http_code}]\n' http://localhost:$(GATEWAY_PORT)/ready | python3 -c 'import sys,json; lines=sys.stdin.read().splitlines(); print(json.dumps(json.loads(lines[0]), indent=2)); print(lines[1])'
+
 metrics:
 	@curl -fsS http://localhost:$(GATEWAY_PORT)/metrics | head -40
 
@@ -46,6 +49,10 @@ redis-cli:
 # Inspect the cluster topology + slot assignment.
 cluster-check:
 	$(COMPOSE) exec redis-1 redis-cli --cluster check redis-1:6379
+
+# Lab 06 — kill a Redis master mid-traffic and observe the failover gap.
+chaos-failover:
+	./chaos/failover.sh
 
 # Unit tests against the TokenBucket implementation. Runs locally via uv —
 # no docker needed, just the gateway/.venv populated by `make sync`.

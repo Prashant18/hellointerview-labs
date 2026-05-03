@@ -16,11 +16,13 @@ Current state:
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 import time
 from contextlib import asynccontextmanager
 
+import redis
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
@@ -31,8 +33,13 @@ from app.lua_tokenbucket import LuaTokenBucket
 from app.redis_tokenbucket import RedisTokenBucket
 from app.tokenbucket import Rule
 
-GATEWAY_VERSION = "lab05"
+GATEWAY_VERSION = "lab06"
 BUCKET_BACKEND = os.getenv("BUCKET_BACKEND", "lua")  # "lua" (atomic) or "redis" (racy, lab 03)
+
+# Fail-closed budget for a single rate-limit check. If Redis can't answer in
+# this window, we reject the request with 503 to keep load off downstream.
+# 100ms is generous for sub-ms Redis ops; tighten in production.
+RL_TIMEOUT_SECONDS = float(os.getenv("RL_TIMEOUT_SECONDS", "0.1"))
 
 RULE = Rule(
     capacity=int(os.getenv("RL_CAPACITY", "10")),
@@ -64,14 +71,24 @@ async def lifespan(app: FastAPI):
     if REDIS_CLUSTER_NODES:
         # Cluster mode (lab 05+). RedisCluster discovers every master/replica
         # from the seed list and keeps its slot map fresh on its own.
+        # socket_timeout caps the per-command wait — combined with the
+        # asyncio.wait_for() in /v1/check, this gives bounded latency under
+        # Redis stalls (lab 06 fail-closed).
         redis_client = RedisCluster(
             startup_nodes=_parse_cluster_nodes(REDIS_CLUSTER_NODES),
             decode_responses=True,
-            require_full_coverage=False,  # tolerate transient partial slot coverage during failover (lab 06)
+            require_full_coverage=False,  # tolerate transient partial slot coverage during failover
+            socket_timeout=RL_TIMEOUT_SECONDS,
+            socket_connect_timeout=0.5,
         )
     else:
         # Single-instance fallback (lab 03/04 local dev).
-        redis_client = Redis.from_url(REDIS_URL, decode_responses=True)
+        redis_client = Redis.from_url(
+            REDIS_URL,
+            decode_responses=True,
+            socket_timeout=RL_TIMEOUT_SECONDS,
+            socket_connect_timeout=0.5,
+        )
     # Fail fast at startup if Redis is unreachable.
     await redis_client.ping()
     if BUCKET_BACKEND == "lua":
@@ -109,6 +126,12 @@ RL_DENIED = Counter(
     "gateway_ratelimit_denied_total",
     "Requests the rate limiter rejected with 429.",
 )
+RL_FAILMODE = Counter(
+    "gateway_ratelimit_failmode_total",
+    "Requests rejected with 503 because the rate limiter could not reach Redis (timeout / connection error). "
+    "Page on this — it is the canary for Redis trouble.",
+    ["reason"],  # bounded: timeout, connection, redis_error
+)
 
 
 @app.middleware("http")
@@ -128,8 +151,26 @@ async def observe(request: Request, call_next):
 
 @app.get("/health")
 async def health(request: Request) -> JSONResponse:
-    # Liveness only. /ready will be added in lab 06 to gate on Redis health.
+    # Liveness — "is this process running?" Doesn't touch Redis. The LB
+    # uses this to detect crashed processes; killing on /health failure
+    # would correctly restart us.
     return JSONResponse({"status": "ok", "version": GATEWAY_VERSION})
+
+
+@app.get("/ready")
+async def ready(request: Request) -> JSONResponse:
+    """Readiness — 'should the LB send me real traffic right now?' Touches
+    Redis. Returns 503 when Redis is unreachable so Caddy/k8s can drain us
+    before serving requests we'd just have to fail-close on. Different
+    semantics from /health: liveness vs. ability-to-serve."""
+    try:
+        await asyncio.wait_for(request.app.state.redis.ping(), timeout=0.5)
+        return JSONResponse({"ready": True, "version": GATEWAY_VERSION})
+    except (asyncio.TimeoutError, redis.RedisError, ConnectionError, OSError) as e:
+        return JSONResponse(
+            status_code=503,
+            content={"ready": False, "reason": type(e).__name__, "detail": str(e)[:200]},
+        )
 
 
 def _client_id_from(request: Request) -> str:
@@ -137,6 +178,21 @@ def _client_id_from(request: Request) -> str:
         request.headers.get("x-client-id")
         or request.headers.get("x-api-key")
         or (request.client.host if request.client else "anonymous")
+    )
+
+
+def _failclosed_response(message: str) -> JSONResponse:
+    """503 with a sensible Retry-After when the rate limiter can't reach Redis."""
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "rate_limit_unavailable",
+            "message": (
+                f"{message}. Rate limiter is temporarily unavailable; "
+                "rejecting request to protect downstream services."
+            ),
+        },
+        headers={"Retry-After": "1"},
     )
 
 
@@ -153,7 +209,24 @@ def _ratelimit_headers(remaining: int, reset_after: float) -> dict[str, str]:
 async def check(request: Request) -> JSONResponse:
     client_id = _client_id_from(request)
     bucket = request.app.state.bucket  # LuaTokenBucket or RedisTokenBucket per BUCKET_BACKEND
-    decision = await bucket.allow(client_id)
+
+    # Fail-closed: bound the per-request wait. If Redis can't answer in
+    # RL_TIMEOUT_SECONDS, reject the request with 503 instead of letting
+    # FastAPI return a 500 (or worse, hanging). The HelloInterview source
+    # argues for fail-CLOSED on a social-media-platform rate limiter so a
+    # Redis outage doesn't avalanche traffic into the backends.
+    try:
+        decision = await asyncio.wait_for(bucket.allow(client_id), timeout=RL_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        RL_FAILMODE.labels(reason="timeout").inc()
+        return _failclosed_response("rate-limit check timed out")
+    except (ConnectionError, OSError):
+        RL_FAILMODE.labels(reason="connection").inc()
+        return _failclosed_response("rate-limit store unreachable")
+    except redis.RedisError as e:
+        RL_FAILMODE.labels(reason="redis_error").inc()
+        return _failclosed_response(f"rate-limit store error: {type(e).__name__}")
+
     headers = _ratelimit_headers(decision.remaining, decision.reset_after)
 
     if not decision.allowed:

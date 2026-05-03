@@ -12,7 +12,7 @@ These labs build each system phase by phase, intentionally introducing the bugs 
 
 | Problem        | Folder                     | Status                                                       |
 | -------------- | -------------------------- | ------------------------------------------------------------ |
-| Rate Limiter   | [`RateLimiter/`](RateLimiter/) | Labs 00–05 complete; lab 06 (failover chaos + fail-closed) up next |
+| Rate Limiter   | [`RateLimiter/`](RateLimiter/) | **✅ Complete (5/10 labs)** — labs 00–05 + lab 06 fail-closed wiring as bonus. See [`RateLimiter/RECAP.md`](RateLimiter/RECAP.md) for the cheat-sheet. |
 
 Each problem folder has its own `JOURNAL.md` chronicling what every lab phase added and the staff+ talking points it unlocks. That's the time-machine: read it top-to-bottom and you walk through the full design journey.
 

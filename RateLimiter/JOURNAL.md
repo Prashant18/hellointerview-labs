@@ -158,4 +158,23 @@ Chronological log of what each lab phase added or changed. The codebase lives in
 
 **What's next:** Lab 06 — chaos engineering. We `docker kill` a master mid-traffic and observe (a) the failover gap (how long until a replica is promoted and the cluster reaches `cluster_state:ok` again), (b) what the gateway actually returns to clients during that gap (timeouts? connection refused? a graceful 503?), and (c) implement the `fail-closed` policy from the HelloInterview source so that gateway returns 503 to keep load off downstream services. The chaos test (`chaos/failover.sh`) is a TDD task for the user.
 
+---
+
+## Wrap-up — RateLimiter complete at lab 05 (2026-05-02)
+
+The architecture story for the rate limiter is complete at lab 05. Every major design lever — algorithm, distribution, atomicity, sharding — is in place and provably exercised by the verify pipeline. We chose to stop here rather than slog through the production-ops labs (06 chaos, 07 hot-keys, 08 dynamic config, 09 integration recap), which are valuable but bounded in interview value relative to time invested.
+
+**Bonus committed alongside the wrap-up (without a `lab-06` tag, since the chaos test wasn't built):**
+- Gateway-side `fail-closed` wiring — `asyncio.wait_for(bucket.allow, 100ms)` + try/except → `503` with `Retry-After: 1`. New `RL_FAILMODE` counter labeled by reason (`timeout` / `connection` / `redis_error`).
+- New `/ready` endpoint — pings Redis, returns 503 when unreachable so the LB can drain. Distinct from `/health` which is liveness only.
+- Configurable `RL_TIMEOUT_SECONDS` env var (default 100ms) and `socket_timeout` on the RedisCluster client matching it.
+- Bonus smoke-tested live: paused all six Redis nodes mid-traffic, observed exactly the right behavior — 503s with the proper headers, `gateway_ratelimit_failmode_total{reason="timeout"}` incremented, instant recovery on unpause.
+- Skeleton at `labs/00-setup/chaos/failover.sh` with 6 TODO blocks, hints, and the expected output format. A future session can implement it as `make chaos-failover` and add the `lab-06` tag.
+
+**Ten cold-question rehearsals + the full pattern table live in `RateLimiter/RECAP.md`.** That's the interview cheat-sheet — if anything in there is fuzzy, redo the relevant lab.
+
+**Total commits:** 7 (initial + lab 03 + lab 04 + lab 05 + this wrap-up). Tags: `RateLimiter/lab-{00,01,02,03,04,05}`. Wrap-up is intentionally untagged.
+
+Onto the next problem.
+
 
